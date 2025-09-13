@@ -1,14 +1,16 @@
 {
   "name": "rollergodservice",
   "version": "1.0.0",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "cors": "^2.8.5",
     "express": "^4.18.2",
     "ws": "^8.13.0",
-    "yarn": "^1.22.22"
+    "node-fetch": "^3.3.2",
+    "cors": "^2.8.5",
+    "pako": "^2.1.0"
   }
 }
