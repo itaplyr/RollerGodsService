@@ -1,166 +1,104 @@
-// tool1-node.js
 import fetch from "node-fetch";
 import pako from "pako";
 
-let running = false;
-
 export default {
   name: "Tool1",
-  /**
-   * Start Tool1
-   * @param {object} options
-   * @param {string} options.itemId - Item ID to purchase
-   * @param {number} options.priceThreshold - Max price to buy
-   * @param {string} options.authToken - Authorization token
-   * @param {string} options.csrfToken - CSRF token
-   */
-  action: async ({ itemId, priceThreshold, authToken, csrfToken }) => {
-    if (running) {
-      console.warn("Tool1 is already running!");
-      return;
-    }
-    running = true;
+  action: ({ itemId, priceThreshold, authToken, csrfToken }) => {
+    let running = true;
 
-    if (!itemId || !priceThreshold || !authToken || !csrfToken) {
-      console.error("Missing required parameters.");
-      running = false;
-      return;
-    }
-
-    // === decoding helpers ===
-    function os(t) { return Uint8Array.from(Buffer.from(t, "base64")); }
-    function ds(t) {
-      const c = new DataView(t.buffer);
-      let a = 0;
-      const s = c.getUint16(a); a += 2;
-      const n = Number(c.getBigUint64(a)); a += 8;
-      const l = [];
-      for (let r = 0; r < s; r++) {
-        const o = c.getUint32(a); a += 4;
-        const i = c.getUint32(a); a += 4;
-        l.push([o, i]);
+    function decodeOffers(t) {
+      const bytes = Uint8Array.from(Buffer.from(t, "base64"));
+      const inflated = pako.inflate(bytes);
+      const view = new DataView(inflated.buffer);
+      let offset = 0;
+      const s = view.getUint16(offset); offset += 2;
+      const n = Number(view.getBigUint64(offset)); offset += 8;
+      const arr = [];
+      for (let i = 0; i < s; i++) {
+        const o = view.getUint32(offset); offset += 4;
+        const l = view.getUint32(offset); offset += 4;
+        arr.push([o, l]);
       }
-      return [l, n];
-    }
-    function us(t, c) {
-      let a = c;
-      const s = [];
-      for (const [n, l] of t) {
-        a += n;
-        if (l !== 0) s.push([a, l]);
+      let a = n;
+      const result = [];
+      for (const [delta, val] of arr) {
+        a += delta;
+        if (val !== 0) result.push([a, val]);
       }
-      return s;
-    }
-    function gs(t) {
-      const c = os(t);
-      const a = pako.inflate(c);
-      const [s, n] = ds(a);
-      return us(s, n);
+      return result;
     }
 
-    const itemType = "mutation_component";
-    const currency = "RLT";
-
-    // === API helpers ===
     async function fetchTradeOffers() {
-      const res = await fetch(
-        `https://rollercoin.com/api/marketplace/item-info?itemId=${itemId}&itemType=${itemType}&currency=${currency}`,
-        {
-          method: "GET",
-          headers: {
-            "Authorization": "Bearer " + authToken,
-            "CSRF-Token": csrfToken,
-            "X-KL-Ajax-Request": "Ajax_Request",
-            "Accept": "application/json",
-          },
+      const url = `https://rollercoin.com/api/marketplace/item-info?itemId=${itemId}&itemType=mutation_component&currency=RLT`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${authToken}`,
+          "CSRF-Token": csrfToken,
+          "X-KL-Ajax-Request": "Ajax_Request",
+          "Accept": "application/json"
         }
-      );
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error || "API error");
-      return json.data.tradeOffers;
-    }
-
-    async function getFirstOffer() {
+      });
+      const text = await res.text();
       try {
-        const tradeOffers = await fetchTradeOffers();
-        const offers = gs(tradeOffers);
-        return offers[0] || null;
+        const json = JSON.parse(text);
+        if (!json.success) throw new Error(json.error || "API error");
+        return decodeOffers(json.data.tradeOffers);
       } catch (err) {
-        console.error("Error decoding tradeOffers:", err);
-        return null;
+        console.error("Failed to parse tradeOffers:", text);
+        throw err;
       }
     }
 
     async function buyItem(price, quantity) {
-      try {
-        const res = await fetch("https://rollercoin.com/api/marketplace/purchase-item", {
-          method: "POST",
-          headers: {
-            "Authorization": "Bearer " + authToken,
-            "CSRF-Token": csrfToken,
-            "X-KL-Ajax-Request": "Ajax_Request",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            challenge: "",
-            action: "marketplace",
-            itemId,
-            itemType,
-            totalCount: quantity,
-            currency,
-            totalPrice: price * quantity,
-          }),
-        });
-        return res.json();
-      } catch (err) {
-        console.error("Error during purchase:", err);
-        return null;
-      }
+      const res = await fetch("https://rollercoin.com/api/marketplace/purchase-item", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${authToken}`,
+          "CSRF-Token": csrfToken,
+          "X-KL-Ajax-Request": "Ajax_Request",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          challenge: "",
+          action: "marketplace",
+          itemId,
+          itemType: "mutation_component",
+          totalCount: quantity,
+          currency: "RLT",
+          totalPrice: price * quantity
+        })
+      });
+      return res.json();
     }
 
-    // === main loop ===
     async function runTool() {
-      if (!running) return;
-      let purchased = false;
-
-      while (running && !purchased) {
-        const offer = await getFirstOffer();
-        if (!offer) {
-          await new Promise(r => setTimeout(r, 50));
-          continue;
-        }
-
-        const [price, quantity] = offer;
-        console.log("First offer - Price:", price, "Quantity:", quantity);
-
-        if (price < priceThreshold) {
-          console.log("Price below threshold, attempting purchase...");
-          const json = await buyItem(price, quantity);
-          if (!json) break;
-
-          console.log("Purchase response:", json);
-          if (json.error === "Conflict") {
-            console.warn("Purchase conflict (409), stopping current iteration.");
-          } else {
-            console.log("✅ Purchase successful!");
+      while (running) {
+        try {
+          const offers = await fetchTradeOffers();
+          if (!offers.length) {
+            await new Promise(r => setTimeout(r, 50));
+            continue;
           }
-          purchased = true;
+          const [price, quantity] = offers[0];
+          console.log("Offer:", price, quantity);
+
+          if (price < priceThreshold) {
+            console.log("Buying...");
+            const res = await buyItem(price, quantity);
+            console.log("Purchase response:", res);
+          }
+        } catch (err) {
+          console.error("Error in Tool1 loop:", err);
         }
-
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      if (running) {
-        console.log("🔄 Restarting Tool1 for next purchase...");
-        setTimeout(runTool, 100);
+        await new Promise(r => setTimeout(r, 100));
       }
     }
 
     runTool();
-  },
 
-  stop: () => {
-    running = false;
-    console.log("🛑 Tool1 stopped!");
-  },
+    return {
+      stop: () => { running = false; console.log("Tool1 stopped"); }
+    };
+  }
 };
